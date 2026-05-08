@@ -73,6 +73,15 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
   const callerRef = useRef<CallerInfo | null>(null);
   const turnsRef = useRef<Turn[]>([]);
   const lowConfStreakRef = useRef(0);
+  const idleTimerRef = useRef<number | null>(null);
+  const idleStageRef = useRef(0);
+
+  const clearIdleTimer = useCallback(() => {
+    if (idleTimerRef.current) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     languageRef.current = language;
