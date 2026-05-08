@@ -168,6 +168,50 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
     [latestTriage, persistCase, addEvent, pushTurn],
   );
 
+  // ----- Idle / silence handling (no immediate escalation) -----
+  const startIdleWatch = useCallback(() => {
+    clearIdleTimer();
+    idleStageRef.current = 0;
+    const tick = () => {
+      // Only nudge if user is supposed to take the turn and hasn't.
+      if (escalatedRef.current || processingRef.current) return;
+      if (!mutedRef.current) return; // user already unmuted/speaking
+      const lang = languageRef.current;
+      idleStageRef.current += 1;
+      const stage = idleStageRef.current;
+      let line = "";
+      if (stage === 1) {
+        line = lang === "hi-IN" ? "मैं सुन रहा हूँ। तैयार हों तो बोलिए।"
+             : lang === "kn-IN" ? "ನಾನು ಕೇಳುತ್ತಿದ್ದೇನೆ. ಸಿದ್ಧವಾದಾಗ ಮಾತನಾಡಿ."
+             : "I'm listening. Continue when you're ready.";
+      } else if (stage === 2) {
+        line = lang === "hi-IN" ? "जब चाहें बोल सकते हैं।"
+             : lang === "kn-IN" ? "ನೀವು ಮಾತನಾಡಬಹುದು."
+             : "You can continue speaking whenever you're ready.";
+      } else {
+        // Mark pending — do NOT escalate just for silence.
+        persistCase({ status: "pending_response" });
+        addEvent("status", "User idle — case marked pending response");
+        clearIdleTimer();
+        return;
+      }
+      pushTurn({ role: "agent", text: line });
+      addEvent("agent_ai", line);
+      isSpeakingRef.current = true;
+      setCallState("speaking");
+      speak(line, lang, {
+        onEnd: () => {
+          isSpeakingRef.current = false;
+          if (!escalatedRef.current && mutedRef.current) {
+            setCallState("listening");
+            idleTimerRef.current = window.setTimeout(tick, 8000);
+          }
+        },
+      });
+    };
+    idleTimerRef.current = window.setTimeout(tick, 8000);
+  }, [clearIdleTimer, pushTurn, addEvent, persistCase]);
+
   // ----- NLP / Triage -----
   const runTriage = useCallback(
     async (transcript: string) => {
