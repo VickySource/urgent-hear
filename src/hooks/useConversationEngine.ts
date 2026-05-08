@@ -468,6 +468,7 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
     } else {
       // ----- UNMUTING: user is taking the turn -----
       // Cut off any AI speech immediately so there is no overlap.
+      clearIdleTimer();
       if (isSpeakingRef.current || isSpeaking()) {
         cancelSpeech();
         isSpeakingRef.current = false;
