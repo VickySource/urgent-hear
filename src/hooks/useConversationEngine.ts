@@ -481,15 +481,16 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
       setCallState("user_speaking");
       addEvent("system", "Caller unmuted — speaking");
     }
-  }, [ensureRecognition, addEvent, runTriage]);
+  }, [ensureRecognition, addEvent, runTriage, clearIdleTimer]);
 
   useEffect(() => {
     return () => {
       wantListeningRef.current = false;
+      clearIdleTimer();
       cancelSpeech();
       try { recognitionRef.current?.stop(); } catch {}
     };
-  }, []);
+  }, [clearIdleTimer]);
 
   return {
     language,
