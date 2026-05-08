@@ -208,25 +208,35 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
         pushTurn({ role: "agent", text: reply, triage });
         addEvent("agent_ai", reply);
         isSpeakingRef.current = true;
+        const willResolve = !!triage.resolved_by_ai && !triage.needs_human;
         speak(reply, languageRef.current, {
           onEnd: () => {
             isSpeakingRef.current = false;
             if (escalatedRef.current) return;
+            if (willResolve) {
+              setCallState("resolved");
+              persistCase({ status: "ai_resolving", finalAction: triage.suggested_action ?? "AI provided guidance" });
+              addEvent("status", "AI marked case as resolved — awaiting user closure");
+              return;
+            }
             // Turn handed back to user — wait for them to UNMUTE.
             setCallState("listening");
+            startIdleWatch();
           },
           onError: () => {
             isSpeakingRef.current = false;
             setCallState("listening");
+            startIdleWatch();
           },
         });
 
+        // Smart escalation — AI-first; do not escalate on noisy/short input alone.
         if (triage.sentiment === "panic") return escalate("panic detected", triage);
         if (triage.priority === "critical" && triage.needs_human) return escalate("critical incident", triage);
         if (triage.needs_human) return escalate("AI requested human", triage);
-        if (triage.confidence_score < 40) {
+        if (triage.confidence_score < 35) {
           lowConfStreakRef.current += 1;
-          if (lowConfStreakRef.current >= 2) return escalate("low confidence repeated", triage);
+          if (lowConfStreakRef.current >= 3) return escalate("low confidence repeated", triage);
         } else {
           lowConfStreakRef.current = 0;
         }
@@ -234,6 +244,7 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
         console.error(e);
         setError(e?.message || "NLP error");
         setCallState("listening");
+        startIdleWatch();
       } finally {
         processingRef.current = false;
       }
