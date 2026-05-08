@@ -428,6 +428,7 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
 
   const endCall = useCallback(() => {
     wantListeningRef.current = false;
+    clearIdleTimer();
     cancelSpeech();
     try { recognitionRef.current?.stop(); } catch {}
     if (caseIdRef.current) {
