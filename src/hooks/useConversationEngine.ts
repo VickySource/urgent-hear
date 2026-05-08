@@ -73,6 +73,15 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
   const callerRef = useRef<CallerInfo | null>(null);
   const turnsRef = useRef<Turn[]>([]);
   const lowConfStreakRef = useRef(0);
+  const idleTimerRef = useRef<number | null>(null);
+  const idleStageRef = useRef(0);
+
+  const clearIdleTimer = useCallback(() => {
+    if (idleTimerRef.current) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     languageRef.current = language;
@@ -159,6 +168,50 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
     [latestTriage, persistCase, addEvent, pushTurn],
   );
 
+  // ----- Idle / silence handling (no immediate escalation) -----
+  const startIdleWatch = useCallback(() => {
+    clearIdleTimer();
+    idleStageRef.current = 0;
+    const tick = () => {
+      // Only nudge if user is supposed to take the turn and hasn't.
+      if (escalatedRef.current || processingRef.current) return;
+      if (!mutedRef.current) return; // user already unmuted/speaking
+      const lang = languageRef.current;
+      idleStageRef.current += 1;
+      const stage = idleStageRef.current;
+      let line = "";
+      if (stage === 1) {
+        line = lang === "hi-IN" ? "मैं सुन रहा हूँ। तैयार हों तो बोलिए।"
+             : lang === "kn-IN" ? "ನಾನು ಕೇಳುತ್ತಿದ್ದೇನೆ. ಸಿದ್ಧವಾದಾಗ ಮಾತನಾಡಿ."
+             : "I'm listening. Continue when you're ready.";
+      } else if (stage === 2) {
+        line = lang === "hi-IN" ? "जब चाहें बोल सकते हैं।"
+             : lang === "kn-IN" ? "ನೀವು ಮಾತನಾಡಬಹುದು."
+             : "You can continue speaking whenever you're ready.";
+      } else {
+        // Mark pending — do NOT escalate just for silence.
+        persistCase({ status: "pending_response" });
+        addEvent("status", "User idle — case marked pending response");
+        clearIdleTimer();
+        return;
+      }
+      pushTurn({ role: "agent", text: line });
+      addEvent("agent_ai", line);
+      isSpeakingRef.current = true;
+      setCallState("speaking");
+      speak(line, lang, {
+        onEnd: () => {
+          isSpeakingRef.current = false;
+          if (!escalatedRef.current && mutedRef.current) {
+            setCallState("listening");
+            idleTimerRef.current = window.setTimeout(tick, 8000);
+          }
+        },
+      });
+    };
+    idleTimerRef.current = window.setTimeout(tick, 8000);
+  }, [clearIdleTimer, pushTurn, addEvent, persistCase]);
+
   // ----- NLP / Triage -----
   const runTriage = useCallback(
     async (transcript: string) => {
@@ -199,25 +252,35 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
         pushTurn({ role: "agent", text: reply, triage });
         addEvent("agent_ai", reply);
         isSpeakingRef.current = true;
+        const willResolve = !!triage.resolved_by_ai && !triage.needs_human;
         speak(reply, languageRef.current, {
           onEnd: () => {
             isSpeakingRef.current = false;
             if (escalatedRef.current) return;
+            if (willResolve) {
+              setCallState("resolved");
+              persistCase({ status: "ai_resolving", finalAction: triage.suggested_action ?? "AI provided guidance" });
+              addEvent("status", "AI marked case as resolved — awaiting user closure");
+              return;
+            }
             // Turn handed back to user — wait for them to UNMUTE.
             setCallState("listening");
+            startIdleWatch();
           },
           onError: () => {
             isSpeakingRef.current = false;
             setCallState("listening");
+            startIdleWatch();
           },
         });
 
+        // Smart escalation — AI-first; do not escalate on noisy/short input alone.
         if (triage.sentiment === "panic") return escalate("panic detected", triage);
         if (triage.priority === "critical" && triage.needs_human) return escalate("critical incident", triage);
         if (triage.needs_human) return escalate("AI requested human", triage);
-        if (triage.confidence_score < 40) {
+        if (triage.confidence_score < 35) {
           lowConfStreakRef.current += 1;
-          if (lowConfStreakRef.current >= 2) return escalate("low confidence repeated", triage);
+          if (lowConfStreakRef.current >= 3) return escalate("low confidence repeated", triage);
         } else {
           lowConfStreakRef.current = 0;
         }
@@ -225,6 +288,7 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
         console.error(e);
         setError(e?.message || "NLP error");
         setCallState("listening");
+        startIdleWatch();
       } finally {
         processingRef.current = false;
       }
@@ -352,7 +416,10 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
       speak(greet, languageRef.current, {
         onEnd: () => {
           isSpeakingRef.current = false;
-          if (!escalatedRef.current) setCallState("listening"); // awaiting unmute
+          if (!escalatedRef.current) {
+            setCallState("listening"); // awaiting unmute
+            startIdleWatch();
+          }
         },
       });
     },
@@ -361,6 +428,7 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
 
   const endCall = useCallback(() => {
     wantListeningRef.current = false;
+    clearIdleTimer();
     cancelSpeech();
     try { recognitionRef.current?.stop(); } catch {}
     if (caseIdRef.current) {
@@ -375,7 +443,7 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
     setCaseId(null);
     callerRef.current = null;
     setCaller(null);
-  }, [addEvent]);
+  }, [addEvent, clearIdleTimer]);
 
   // toggleMute = the user's "turn-end" / "turn-start" button.
   const toggleMute = useCallback(() => {
@@ -401,6 +469,7 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
     } else {
       // ----- UNMUTING: user is taking the turn -----
       // Cut off any AI speech immediately so there is no overlap.
+      clearIdleTimer();
       if (isSpeakingRef.current || isSpeaking()) {
         cancelSpeech();
         isSpeakingRef.current = false;
@@ -413,15 +482,16 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
       setCallState("user_speaking");
       addEvent("system", "Caller unmuted — speaking");
     }
-  }, [ensureRecognition, addEvent, runTriage]);
+  }, [ensureRecognition, addEvent, runTriage, clearIdleTimer]);
 
   useEffect(() => {
     return () => {
       wantListeningRef.current = false;
+      clearIdleTimer();
       cancelSpeech();
       try { recognitionRef.current?.stop(); } catch {}
     };
-  }, []);
+  }, [clearIdleTimer]);
 
   return {
     language,
