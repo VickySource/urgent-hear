@@ -443,7 +443,7 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
     setCaseId(null);
     callerRef.current = null;
     setCaller(null);
-  }, [addEvent]);
+  }, [addEvent, clearIdleTimer]);
 
   // toggleMute = the user's "turn-end" / "turn-start" button.
   const toggleMute = useCallback(() => {
