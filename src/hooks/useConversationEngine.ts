@@ -416,7 +416,10 @@ export function useConversationEngine(initialLang: TTSLang = "en-IN") {
       speak(greet, languageRef.current, {
         onEnd: () => {
           isSpeakingRef.current = false;
-          if (!escalatedRef.current) setCallState("listening"); // awaiting unmute
+          if (!escalatedRef.current) {
+            setCallState("listening"); // awaiting unmute
+            startIdleWatch();
+          }
         },
       });
     },
